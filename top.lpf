@@ -1,16 +1,10 @@
 BLOCK RESETPATHS;
 BLOCK ASYNCPATHS;
 
-# ============================================================
-# Clock (from your original)
-# ============================================================
 LOCATE      COMP "CLK"    SITE "P6";
 IOBUF       PORT "CLK"    IO_TYPE=LVCMOS33;
 FREQUENCY   PORT "CLK"    25 MHZ;
 
-# ============================================================
-# LCD Pins (from your original)
-# ============================================================
 LOCATE COMP "LCD_CLK" SITE "J13";
 IOBUF PORT "LCD_CLK" DRIVE=4 IO_TYPE=LVCMOS33;
 LOCATE COMP "LCD_DEN" SITE "F13";
@@ -51,9 +45,6 @@ IOBUF PORT "LCD_B[3]" DRIVE=4 IO_TYPE=LVCMOS33;
 LOCATE COMP "LCD_B[4]" SITE "F14";
 IOBUF PORT "LCD_B[4]" DRIVE=4 IO_TYPE=LVCMOS33;
 
-# ============================================================
-# SPI Pins (from your original)
-# ============================================================
 LOCATE COMP "cs_n" SITE "R8";
 IOBUF PORT "cs_n" IO_TYPE=LVCMOS33;
 

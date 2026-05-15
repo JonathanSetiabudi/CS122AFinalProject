@@ -1,15 +1,12 @@
 TARGET=top
 TOP=top
 
-# List ALL your Verilog files here
-OBJS+=top.v
+OBJS+=top.sv
 OBJS+=async_fifo.v
 OBJS+=lcd_fb.v
 OBJS+=lcd_timing.v
 OBJS+=pll_clocks.v
 OBJS+=sdram_controller.v
-
-TRELLIS=/usr/local/share/trellis
 
 all: ${TARGET}.bit
 
@@ -22,12 +19,10 @@ $(TARGET)_out.config: $(TARGET).json
 $(TARGET).bit: $(TARGET)_out.config
 	ecppack --svf ${TARGET}.svf $< $@
 
-${TARGET}.svf : ${TARGET}.bit
-
-prog: ${TARGET}.svf
+prog: ${TARGET}.bit
 	openFPGALoader -c digilent_hs2 $(TARGET).bit
 
 clean:
-	rm -f *.svf *.bit *.config *.ys *.json
+	rm -f *.svf *.bit *.config *.json
 
 .PHONY: prog clean
