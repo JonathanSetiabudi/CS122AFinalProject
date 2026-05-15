@@ -1,105 +1,105 @@
-module top
-(
-    input CLK,          // 25 MHz LCD clock
-    input sclk,         // SPI clock from Pico
-    input mosi,         // SPI data
-    input cs_n,         // SPI chip select
+module top (
+    // 25MHz clock
+    input  wire        clk_25m,
+    
+    // SPI from Pico
+    input  wire        sclk,
+    input  wire        mosi,
+    input  wire        cs_n,
 
-    output LCD_CLK,
-    output LCD_DEN,
-    output [4:0] LCD_B,
-    output [5:0] LCD_G,
-    output [4:0] LCD_R
+    // SDRAM Interface
+    output wire        sdram_clk,
+    output wire        sdram_cke,
+    output wire        sdram_cs_n,
+    output wire        sdram_ras_n,
+    output wire        sdram_cas_n,
+    output wire        sdram_we_n,
+    output wire [1:0]  sdram_ba,
+    output wire [12:0] sdram_a,
+    output wire [1:0]  sdram_dqm,
+    inout  wire [15:0] sdram_dq,
+
+    // LCD Interface
+    output wire        lcd_clk,
+    output wire        lcd_hsync,
+    output wire        lcd_vsync,
+    output wire        lcd_de,
+    output wire [4:0]  lcd_r,
+    output wire [5:0]  lcd_g,
+    output wire [4:0]  lcd_b,
+    output wire [4:0]  dbg
 );
 
-// ============================================================
-// LCD Timing (480x272 with blanking)
-// ============================================================
-reg [9:0] h_counter = 0;
-reg [8:0] v_counter = 0;
+    // ============================================================
+    // Framebuffer Write Interface (Connects to Professor's Module)
+    // ============================================================
+    reg        wr_en;
+    reg [23:0] wr_addr;
+    reg [15:0] wr_data;
 
-wire h_active = (h_counter < 480);
-wire v_active = (v_counter < 272);
-wire active = h_active & v_active;
-
-assign LCD_CLK = CLK;
-assign LCD_DEN = active;
-
-// ============================================================
-// SPI Receiver - Receives command from Pico
-// ============================================================
-reg [7:0] received_value = 0;     // Stores the received number
-reg [7:0] shift_reg = 0;
-reg [2:0] bit_count = 0;
-reg data_ready = 0;
-
-always @(posedge sclk) begin
-    if (cs_n) begin
-        // Reset when not selected
-        bit_count <= 0;
-        shift_reg <= 0;
-        data_ready <= 0;
-    end else begin
-        // Shift in SPI data (MSB first)
-        shift_reg <= {shift_reg[6:0], mosi};
-        bit_count <= bit_count + 1'b1;
-        
-        // After 8 bits, we have a full byte
-        if (bit_count == 3'd7) begin
-            received_value <= {shift_reg[6:0], mosi};
-            data_ready <= 1'b1;
+    // ============================================================
+    // SPI Receiver - Receives 16-bit RGB565 pixels from Pico
+    // ============================================================
+    reg [15:0] shift_reg = 0;
+    reg [3:0]  bit_count = 0;
+    reg [23:0] pixel_addr = 0;
+    reg        receiving = 0;
+    
+    always @(posedge sclk) begin
+        if (cs_n) begin
+            // Reset when SPI not selected
             bit_count <= 0;
+            shift_reg <= 0;
+            pixel_addr <= 0;
+            wr_en <= 0;
         end else begin
-            data_ready <= 0;
+            // Shift in SPI data (MSB first)
+            shift_reg <= {shift_reg[14:0], mosi};
+            bit_count <= bit_count + 1'b1;
+            
+            // After 16 bits, we have a full pixel
+            if (bit_count == 4'd15) begin
+                wr_en <= 1;
+                wr_addr <= pixel_addr;
+                wr_data <= {shift_reg[14:0], mosi};
+                pixel_addr <= pixel_addr + 1;
+                bit_count <= 0;
+            end else begin
+                wr_en <= 0;
+            end
         end
     end
-end
 
-// ============================================================
-// Command Interpretation
-// 90 = vertical line
-// anything else = horizontal line
-// ============================================================
-wire is_vertical = (received_value == 8'd90);
-wire is_horizontal = (received_value != 8'd90);
+    // ============================================================
+    // Professor's LCD Framebuffer Module (Handles SDRAM + LCD)
+    // ============================================================
+    icesugar_pro_lcd_fb fb_inst (
+        .clk_25m(clk_25m),
+        
+        .sdram_clk(sdram_clk),
+        .sdram_cke(sdram_cke),
+        .sdram_cs_n(sdram_cs_n),
+        .sdram_ras_n(sdram_ras_n),
+        .sdram_cas_n(sdram_cas_n),
+        .sdram_we_n(sdram_we_n),
+        .sdram_ba(sdram_ba),
+        .sdram_a(sdram_a),
+        .sdram_dqm(sdram_dqm),
+        .sdram_dq(sdram_dq),
 
-// ============================================================
-// Procedural Graphics - Draw line based on command
-// ============================================================
-// Vertical line: x = 234 to 245 (centered, 12 pixels wide)
-wire vertical_line_active = is_vertical && 
-                            (h_counter >= 234) && (h_counter <= 245);
+        .lcd_clk(lcd_clk),
+        .lcd_hsync(lcd_hsync),
+        .lcd_vsync(lcd_vsync),
+        .lcd_de(lcd_de),
+        .lcd_r(lcd_r),
+        .lcd_g(lcd_g),
+        .lcd_b(lcd_b),
+        
+        .wr_en(wr_en),
+        .wr_addr(wr_addr),
+        .wr_data(wr_data)
+    );
 
-// Horizontal line: y = 130 to 142 (centered, 12 pixels high)
-wire horizontal_line_active = is_horizontal && 
-                              (v_counter >= 130) && (v_counter <= 142);
-
-// Line is active if either vertical or horizontal line is active
-wire line_active = vertical_line_active || horizontal_line_active;
-
-// Colors: Line = WHITE, Background = BLACK
-wire [4:0] red   = line_active ? 5'b11111 : 5'b00000;
-wire [5:0] green = line_active ? 6'b111111 : 6'b000000;
-wire [4:0] blue  = line_active ? 5'b11111 : 5'b00000;
-
-// Output to LCD (only during active region)
-assign LCD_R = active ? red   : 5'b00000;
-assign LCD_G = active ? green : 6'b000000;
-assign LCD_B = active ? blue  : 5'b00000;
-
-// ============================================================
-// LCD Scanline Counter
-// ============================================================
-always @(posedge CLK) begin
-    if (h_counter == 524) begin
-        h_counter <= 0;
-        if (v_counter == 284)
-            v_counter <= 0;
-        else
-            v_counter <= v_counter + 1'b1;
-    end else begin
-        h_counter <= h_counter + 1'b1;
-    end
-end
+    assign dbg = {lcd_hsync, lcd_vsync, lcd_de};
 
 endmodule
