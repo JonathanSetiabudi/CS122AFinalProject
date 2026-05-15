@@ -1,19 +1,33 @@
-.PHONY: clean
+TARGET=top
+TOP=top
 
-%.sim: tb/%_tb.sv #src/*.sv
-	iverilog -g2012 -o build/$@ $<
-	vvp build/$@
-	gtkwave build/$*.vcd
+# List ALL your Verilog files here
+OBJS+=top.v
+OBJS+=async_fifo.v
+OBJS+=lcd_fb.v
+OBJS+=lcd_timing.v
+OBJS+=pll_clocks.v
+OBJS+=sdram_controller.v
 
-%.bit: src/%.sv
-	yosys -p "synth_ecp5 -json build/$*.json" $^
-	nextpnr-ecp5 --25k --package CABGA256 --speed 6 --json build/$*.json --textcfg build/$*.cfg --lpf $*.lpf --freq 65
-	ecppack --svf build/$*.svf build/$*.cfg build/$@
-	
-%.bin: src/%.sv
-	yosys -p "synth_ice40 -json build/$*.json" $^
-	nextpnr-ice40 --up5k --package sg48 --json build/$*.json --pcf $*.pcf --asc build/$*.asc --freq 12
-	icepack build/$*.asc build/$@
+TRELLIS=/usr/local/share/trellis
+
+all: ${TARGET}.bit
+
+$(TARGET).json: $(OBJS)
+	yosys -p "synth_ecp5 -json $@" $(OBJS)
+
+$(TARGET)_out.config: $(TARGET).json
+	nextpnr-ecp5 --25k --package CABGA256 --speed 6 --json $< --textcfg $@ --lpf top.lpf --freq 65
+
+$(TARGET).bit: $(TARGET)_out.config
+	ecppack --svf ${TARGET}.svf $< $@
+
+${TARGET}.svf : ${TARGET}.bit
+
+prog: ${TARGET}.svf
+	openFPGALoader -c digilent_hs2 $(TARGET).bit
 
 clean:
-	rm -f build/*
+	rm -f *.svf *.bit *.config *.ys *.json
+
+.PHONY: prog clean
