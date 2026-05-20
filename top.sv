@@ -1,9 +1,3 @@
-`include "async_fifo.v"
-`include "lcd_fb.v"
-`include "lcd_timing.v"
-`include "pll_clocks.v"
-`include "sdram_controller.v"
-
 module top (
     // iCESugar-Pro 25MHz onboard clock (Pin P6)
     input  wire        clk_25m,
