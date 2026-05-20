@@ -33,28 +33,26 @@ module top (
     reg [15:0] wr_data = 0;
 
     // ============================================================
-    // SPI Receiver - writes to async FIFO (FIXED)
+    // SPI Receiver - FINAL CORRECTED VERSION
     // ============================================================
     reg [15:0] shift_reg = 0;
     reg [3:0]  bit_count = 0;
     reg        fifo_wr_en_reg = 0;
     
-    // Use registered output for FIFO write enable
-    assign fifo_wr_en = fifo_wr_en_reg;
-    
     always @(posedge sclk) begin
-        fifo_wr_en_reg <= 0;
-        
         if (cs_n) begin
             bit_count <= 0;
             shift_reg <= 0;
+            fifo_wr_en_reg <= 0;
         end else begin
+            fifo_wr_en_reg <= 0;
             shift_reg <= {shift_reg[14:0], mosi};
-            bit_count <= bit_count + 1'b1;
             
             if (bit_count == 4'd15) begin
                 fifo_wr_en_reg <= 1;
                 bit_count <= 0;
+            end else begin
+                bit_count <= bit_count + 1'b1;
             end
         end
     end
@@ -69,16 +67,17 @@ module top (
     wire [15:0] fifo_dout;
     wire        fifo_empty;
     
-    assign fifo_din = shift_reg;  // 16-bit pixel
+    assign fifo_wr_en = fifo_wr_en_reg;
+    assign fifo_din = {shift_reg[14:0], mosi};  // Complete 16-bit value
     
     async_fifo #(
         .DATA_WIDTH(16),
-        .ADDR_WIDTH(9)  // 512 words deep
+        .ADDR_WIDTH(9)
     ) spi_fifo (
         .wr_clk(sclk),
         .rd_clk(clk_25m),
         .rst(1'b0),
-        .wr_en(fifo_wr_en && !fifo_full),  // Don't write if full!
+        .wr_en(fifo_wr_en && !fifo_full),
         .din(fifo_din),
         .rd_en(fifo_rd_en),
         .dout(fifo_dout),
@@ -88,11 +87,12 @@ module top (
     );
     
     // ============================================================
-    // FIFO Reader - writes to SDRAM (with proper state machine)
+    // FIFO Reader - writes to SDRAM (with registered data)
     // ============================================================
     reg [23:0] sdram_addr = 0;
     reg [1:0]  state = 0;
     reg        fifo_rd_en_reg = 0;
+    reg [15:0] fifo_data_reg = 0;  // IMPORTANT: Register FIFO output
     
     assign fifo_rd_en = fifo_rd_en_reg;
     
@@ -106,7 +106,6 @@ module top (
         cs_n_sync2 <= cs_n_sync1;
         cs_n_prev <= cs_n_sync2;
         
-        // Reset address when CS rises (end of frame)
         if (cs_n_sync2 && !cs_n_prev) begin
             sdram_addr <= 0;
         end
@@ -117,20 +116,22 @@ module top (
         fifo_rd_en_reg <= 0;
         
         case (state)
-            0: begin  // IDLE - wait for data
+            0: begin
                 if (!fifo_empty) begin
                     fifo_rd_en_reg <= 1;
                     state <= 1;
                 end
             end
             
-            1: begin  // WAIT - let FIFO data stabilize (1 cycle latency)
+            1: begin
+                // Register FIFO output to prevent it changing during write
+                fifo_data_reg <= fifo_dout;
                 state <= 2;
             end
             
-            2: begin  // WRITE - write to SDRAM
+            2: begin
                 wr_addr <= sdram_addr;
-                wr_data <= fifo_dout;
+                wr_data <= fifo_data_reg;  // Use registered value
                 wr_en <= 1;
                 sdram_addr <= sdram_addr + 1;
                 state <= 0;
