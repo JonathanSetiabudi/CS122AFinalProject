@@ -1,6 +1,7 @@
 TARGET=top
 TOP=top
 
+# All Verilog files
 OBJS+=top.sv
 OBJS+=async_fifo.v
 OBJS+=lcd_fb.v
