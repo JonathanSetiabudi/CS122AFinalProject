@@ -121,7 +121,7 @@
 
 //         // Convert raw gyroscope data to degrees per second
 //         gyro_rate = (float)gyro[0] / 131.0;
-//         accel_pitch = atan2(-acceleration[0],sqrt((acceleration[1]*acceleration[1] + acceleration[2]*acceleration[2]))) * (180.0/M_PI);
+//         accel_pitch = atan2(-acceleration[0], acceleration[2]) * (180.0 / M_PI);
 //         // dt is 100ms or 0.1 seconds
 //         angle_curr = angle_filtered + (gyro_rate * 0.1);
 //         angle_filtered = alpha * angle_curr + (1-alpha) * accel_pitch;
