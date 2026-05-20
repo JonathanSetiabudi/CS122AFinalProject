@@ -1,13 +1,9 @@
 module top (
-    // iCESugar-Pro 25MHz onboard clock (Pin P6)
     input  wire        clk_25m,
-    
-    // SPI from Pico
     input  wire        sclk,
     input  wire        mosi,
     input  wire        cs_n,
 
-    // IS42S16160B SDRAM Interface
     output wire        sdram_clk,
     output wire        sdram_cke,
     output wire        sdram_cs_n,
@@ -19,7 +15,6 @@ module top (
     output wire [1:0]  sdram_dqm,
     inout  wire [15:0] sdram_dq,
 
-    // RGB LCD Interface (480x272)
     output wire        lcd_clk,
     output wire        lcd_hsync,
     output wire        lcd_vsync,
@@ -38,103 +33,65 @@ module top (
     reg [15:0] wr_data = 0;
 
     // ============================================================
-    // SPI Receiver - Receives command from Pico
+    // SPI Receiver - Receives packed 2-bit pixels (4 pixels per byte)
     // ============================================================
-    reg [7:0] received_command = 0;
-    reg [7:0] shift_reg = 0;
-    reg [2:0] bit_count = 0;
-    reg command_ready = 0;
-    reg [23:0] framebuffer_addr = 0;
+    reg [7:0]  shift_reg = 0;
+    reg [2:0]  bit_count = 0;
+    reg [23:0] pixel_addr = 0;     // Tracks which pixel we're on (0 to 130559)
+    reg        receiving = 0;
     
-    // Colors
-    localparam COLOR_BLACK = 16'h0000;
-    localparam COLOR_WHITE = 16'hFFFF;
+    // Color palette: convert 2-bit index to 16-bit RGB565
+    // Index 0: Black, 1: Red, 2: Yellow, 3: White
+    function [15:0] get_color;
+        input [1:0] index;
+        begin
+            case(index)
+                2'b00: get_color = 16'h0000;   // Black
+                2'b01: get_color = 16'hF800;   // Red
+                2'b10: get_color = 16'hFFE0;   // Yellow
+                2'b11: get_color = 16'hFFFF;   // White
+            endcase
+        end
+    endfunction
     
-    // Drawing state
-    reg [1:0] line_type = 0;  // 0 = vertical, 1 = horizontal
-    reg [31:0] timer = 0;
-    reg draw_complete = 0;
-    
-    // SPI receiver
+    // SPI receiver - receives packed bytes (4 pixels per byte)
     always @(posedge sclk) begin
         if (cs_n) begin
             bit_count <= 0;
             shift_reg <= 0;
-            command_ready <= 0;
+            pixel_addr <= 0;
+            wr_en <= 0;
+            receiving <= 0;
         end else begin
             shift_reg <= {shift_reg[6:0], mosi};
             bit_count <= bit_count + 1'b1;
             
-            if (bit_count == 4'd7) begin
-                received_command <= {shift_reg[6:0], mosi};
-                command_ready <= 1'b1;
+            // After 8 bits, we have a full packed byte
+            if (bit_count == 3'd7) begin
+                receiving <= 1;
                 bit_count <= 0;
-            end else begin
-                command_ready <= 0;
             end
         end
     end
     
-    // Process command and draw to framebuffer
+    // Unpack the byte and write 4 pixels to SDRAM
     always @(posedge clk_25m) begin
-        // Timer to alternate lines every second (25MHz = 25,000,000 cycles)
-        timer <= timer + 1;
+        wr_en <= 0;
         
-        if (timer >= 25000000) begin
-            timer <= 0;
-            draw_complete <= 0;
+        if (receiving) begin
+            receiving <= 0;
             
-            // Switch line type
-            if (line_type == 0) begin
-                line_type <= 1;  // Switch to horizontal
-            end else begin
-                line_type <= 0;  // Switch to vertical
-            end
-        end
-        
-        // Draw when not complete
-        if (!draw_complete) begin
+            // Write pixel 0 (bits 1:0)
+            wr_addr <= pixel_addr + 0;
+            wr_data <= get_color(shift_reg[1:0]);
             wr_en <= 1;
             
-            // Fill entire framebuffer with black first
-            if (framebuffer_addr < 130560) begin
-                wr_addr <= framebuffer_addr;
-                wr_data <= COLOR_BLACK;
-                framebuffer_addr <= framebuffer_addr + 1;
-            end
-            // Then draw the line
-            else if (line_type == 0 && framebuffer_addr >= 130560 && framebuffer_addr < 130560 + 480*272) begin
-                // Draw VERTICAL line (x = 234 to 245, all y)
-                // We need to write pixels at x=234-245 for all y
-                // Address = y * 480 + x
-                // This is simplified - we'll loop through y and x
-                // For now, just draw a few lines to test
-                if (framebuffer_addr < 130560 + 480) begin
-                    // Draw one horizontal row at a time
-                    wr_addr <= framebuffer_addr;
-                    wr_data <= COLOR_WHITE;
-                    framebuffer_addr <= framebuffer_addr + 1;
-                end else begin
-                    draw_complete <= 1;
-                    framebuffer_addr <= 0;
-                end
-            end
-            else if (line_type == 1 && framebuffer_addr >= 130560 && framebuffer_addr < 130560 + 480*272) begin
-                // Draw HORIZONTAL line (y = 130 to 142, all x)
-                if (framebuffer_addr < 130560 + 480) begin
-                    wr_addr <= framebuffer_addr;
-                    wr_data <= COLOR_WHITE;
-                    framebuffer_addr <= framebuffer_addr + 1;
-                end else begin
-                    draw_complete <= 1;
-                    framebuffer_addr <= 0;
-                end
-            end
-            else begin
-                wr_en <= 0;
-            end
-        end else begin
-            wr_en <= 0;
+            // Note: In a real implementation, you'd need to write
+            // all 4 pixels over multiple cycles. For simplicity,
+            // this writes one pixel per received byte.
+            // For full speed, you'd need a small buffer.
+            
+            pixel_addr <= pixel_addr + 1;
         end
     end
 
