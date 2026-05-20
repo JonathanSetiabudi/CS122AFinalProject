@@ -33,65 +33,63 @@ module top (
     reg [15:0] wr_data = 0;
 
     // ============================================================
-    // SPI Receiver - Receives packed 2-bit pixels (4 pixels per byte)
+    // SPI Receiver - 16-bit RGB565 pixels
     // ============================================================
-    reg [7:0]  shift_reg = 0;
-    reg [2:0]  bit_count = 0;
-    reg [23:0] pixel_addr = 0;     // Tracks which pixel we're on (0 to 130559)
-    reg        receiving = 0;
+    reg [15:0] shift_reg = 0;
+    reg [3:0]  bit_count = 0;
+    reg [23:0] pixel_addr = 0;
+    reg        write_pending = 0;
+    reg [15:0] pending_data = 0;
+    reg [23:0] pending_addr = 0;
     
-    // Color palette: convert 2-bit index to 16-bit RGB565
-    // Index 0: Black, 1: Red, 2: Yellow, 3: White
-    function [15:0] get_color;
-        input [1:0] index;
-        begin
-            case(index)
-                2'b00: get_color = 16'h0000;   // Black
-                2'b01: get_color = 16'hF800;   // Red
-                2'b10: get_color = 16'hFFE0;   // Yellow
-                2'b11: get_color = 16'hFFFF;   // White
-            endcase
-        end
-    endfunction
-    
-    // SPI receiver - receives packed bytes (4 pixels per byte)
+    // SPI receiver on sclk domain
     always @(posedge sclk) begin
         if (cs_n) begin
             bit_count <= 0;
             shift_reg <= 0;
             pixel_addr <= 0;
-            wr_en <= 0;
-            receiving <= 0;
+            write_pending <= 0;
         end else begin
-            shift_reg <= {shift_reg[6:0], mosi};
+            shift_reg <= {shift_reg[14:0], mosi};
             bit_count <= bit_count + 1'b1;
             
-            // After 8 bits, we have a full packed byte
-            if (bit_count == 3'd7) begin
-                receiving <= 1;
+            if (bit_count == 4'd15) begin
+                // Full 16-bit pixel received
+                pending_data <= {shift_reg[14:0], mosi};
+                pending_addr <= pixel_addr;
+                write_pending <= 1;
+                pixel_addr <= pixel_addr + 1;
                 bit_count <= 0;
             end
         end
     end
     
-    // Unpack the byte and write 4 pixels to SDRAM
+    // Cross to clk_25m domain with simple synchronizer
+    reg        write_pending_sync = 0;
+    reg [15:0] pending_data_sync = 0;
+    reg [23:0] pending_addr_sync = 0;
+    
+    always @(posedge clk_25m) begin
+        write_pending_sync <= write_pending;
+        if (write_pending_sync) begin
+            pending_data_sync <= pending_data;
+            pending_addr_sync <= pending_addr;
+        end
+    end
+    
+    // Write to SDRAM on clk_25m domain
+    reg write_done = 0;
+    
     always @(posedge clk_25m) begin
         wr_en <= 0;
         
-        if (receiving) begin
-            receiving <= 0;
-            
-            // Write pixel 0 (bits 1:0)
-            wr_addr <= pixel_addr + 0;
-            wr_data <= get_color(shift_reg[1:0]);
+        if (write_pending_sync && !write_done) begin
+            wr_addr <= pending_addr_sync;
+            wr_data <= pending_data_sync;
             wr_en <= 1;
-            
-            // Note: In a real implementation, you'd need to write
-            // all 4 pixels over multiple cycles. For simplicity,
-            // this writes one pixel per received byte.
-            // For full speed, you'd need a small buffer.
-            
-            pixel_addr <= pixel_addr + 1;
+            write_done <= 1;
+        end else begin
+            write_done <= 0;
         end
     end
 
