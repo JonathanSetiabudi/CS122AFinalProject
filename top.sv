@@ -33,67 +33,114 @@ module top (
     reg [15:0] wr_data = 0;
 
     // ============================================================
-    // SPI Receiver - 16-bit RGB565 pixels
+    // SPI Receiver - writes to async FIFO (FIXED)
     // ============================================================
     reg [15:0] shift_reg = 0;
     reg [3:0]  bit_count = 0;
-    reg [23:0] pixel_addr = 0;
-    reg        write_pending = 0;
-    reg [15:0] pending_data = 0;
-    reg [23:0] pending_addr = 0;
+    reg        fifo_wr_en_reg = 0;
     
-    // SPI receiver on sclk domain
+    // Use registered output for FIFO write enable
+    assign fifo_wr_en = fifo_wr_en_reg;
+    
     always @(posedge sclk) begin
+        fifo_wr_en_reg <= 0;
+        
         if (cs_n) begin
             bit_count <= 0;
             shift_reg <= 0;
-            pixel_addr <= 0;
-            write_pending <= 0;
         end else begin
             shift_reg <= {shift_reg[14:0], mosi};
             bit_count <= bit_count + 1'b1;
             
             if (bit_count == 4'd15) begin
-                // Full 16-bit pixel received
-                pending_data <= {shift_reg[14:0], mosi};
-                pending_addr <= pixel_addr;
-                write_pending <= 1;
-                pixel_addr <= pixel_addr + 1;
+                fifo_wr_en_reg <= 1;
                 bit_count <= 0;
             end
         end
     end
     
-    // Cross to clk_25m domain with simple synchronizer
-    reg        write_pending_sync = 0;
-    reg [15:0] pending_data_sync = 0;
-    reg [23:0] pending_addr_sync = 0;
+    // ============================================================
+    // Async FIFO (clock domain crossing)
+    // ============================================================
+    wire        fifo_wr_en;
+    wire [15:0] fifo_din;
+    wire        fifo_full;
+    wire        fifo_rd_en;
+    wire [15:0] fifo_dout;
+    wire        fifo_empty;
+    
+    assign fifo_din = shift_reg;  // 16-bit pixel
+    
+    async_fifo #(
+        .DATA_WIDTH(16),
+        .ADDR_WIDTH(9)  // 512 words deep
+    ) spi_fifo (
+        .wr_clk(sclk),
+        .rd_clk(clk_25m),
+        .rst(1'b0),
+        .wr_en(fifo_wr_en && !fifo_full),  // Don't write if full!
+        .din(fifo_din),
+        .rd_en(fifo_rd_en),
+        .dout(fifo_dout),
+        .empty(fifo_empty),
+        .full(fifo_full),
+        .almost_empty()
+    );
+    
+    // ============================================================
+    // FIFO Reader - writes to SDRAM (with proper state machine)
+    // ============================================================
+    reg [23:0] sdram_addr = 0;
+    reg [1:0]  state = 0;
+    reg        fifo_rd_en_reg = 0;
+    
+    assign fifo_rd_en = fifo_rd_en_reg;
+    
+    // Synchronize cs_n to clk_25m domain for frame reset
+    reg cs_n_sync1 = 0;
+    reg cs_n_sync2 = 0;
+    reg cs_n_prev = 0;
     
     always @(posedge clk_25m) begin
-        write_pending_sync <= write_pending;
-        if (write_pending_sync) begin
-            pending_data_sync <= pending_data;
-            pending_addr_sync <= pending_addr;
+        cs_n_sync1 <= cs_n;
+        cs_n_sync2 <= cs_n_sync1;
+        cs_n_prev <= cs_n_sync2;
+        
+        // Reset address when CS rises (end of frame)
+        if (cs_n_sync2 && !cs_n_prev) begin
+            sdram_addr <= 0;
         end
     end
-    
-    // Write to SDRAM on clk_25m domain
-    reg write_done = 0;
     
     always @(posedge clk_25m) begin
         wr_en <= 0;
+        fifo_rd_en_reg <= 0;
         
-        if (write_pending_sync && !write_done) begin
-            wr_addr <= pending_addr_sync;
-            wr_data <= pending_data_sync;
-            wr_en <= 1;
-            write_done <= 1;
-        end else begin
-            write_done <= 0;
-        end
+        case (state)
+            0: begin  // IDLE - wait for data
+                if (!fifo_empty) begin
+                    fifo_rd_en_reg <= 1;
+                    state <= 1;
+                end
+            end
+            
+            1: begin  // WAIT - let FIFO data stabilize (1 cycle latency)
+                state <= 2;
+            end
+            
+            2: begin  // WRITE - write to SDRAM
+                wr_addr <= sdram_addr;
+                wr_data <= fifo_dout;
+                wr_en <= 1;
+                sdram_addr <= sdram_addr + 1;
+                state <= 0;
+            end
+        endcase
     end
 
+    // ============================================================
     // Professor's SDRAM Framebuffer Module
+    // ============================================================
     icesugar_pro_lcd_fb fb_inst (
         .clk_25m(clk_25m),
         
