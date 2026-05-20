@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <math.h>
 #include <stdint.h>
 #include <string.h>
 #include "pico/stdlib.h"
@@ -74,8 +75,8 @@ void draw_circle(int cx, int cy, int radius, uint16_t color) {
 
 // Draw a line using Bresenham's algorithm
 void draw_line(int x0, int y0, int x1, int y1, uint16_t color) {
-    int dx = abs(x1 - x0);
-    int dy = -abs(y1 - y0);
+    int dx = fabs(x1 - x0);
+    int dy = -fabs(y1 - y0);
     int sx = (x0 < x1) ? 1 : -1;
     int sy = (y0 < y1) ? 1 : -1;
     int err = dx + dy;
