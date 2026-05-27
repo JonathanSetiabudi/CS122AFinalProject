@@ -1,5 +1,8 @@
 module top (
     input  wire        clk_25m,
+    input  wire        sclk,
+    input  wire        mosi,
+    input  wire        cs_n,
 
     output wire        lcd_clk,
     output wire        lcd_hsync,
@@ -37,12 +40,38 @@ module top (
     
     reg [9:0] h_cnt = 0;
     reg [8:0] v_cnt = 0;
-    
     wire active = (h_cnt < H_ACTIVE) && (v_cnt < V_ACTIVE);
     
     assign lcd_hsync = ~((h_cnt >= H_ACTIVE + H_FP) && (h_cnt < H_ACTIVE + H_FP + H_SYNC));
     assign lcd_vsync = ~((v_cnt >= V_ACTIVE + V_FP) && (v_cnt < V_ACTIVE + V_FP + V_SYNC));
     assign lcd_de = active;
+
+    reg [7:0] angle_raw = 0;
+    reg [7:0] shift_reg = 0;
+    reg [2:0] bit_count = 0;
+    
+    always @(posedge sclk) begin
+        if (cs_n) begin
+            bit_count <= 0;
+            shift_reg <= 0;
+        end else begin
+            shift_reg <= {shift_reg[6:0], mosi};
+            bit_count <= bit_count + 1'b1;
+            
+            if (bit_count == 3'd7) begin
+                angle_raw <= {shift_reg[6:0], mosi};
+                bit_count <= 0;
+            end
+        end
+    end
+    
+    reg [7:0] angle_sync1 = 0;
+    reg [7:0] angle_deg = 0;
+    
+    always @(posedge clk_pixel) begin
+        angle_sync1 <= angle_raw;
+        angle_deg <= angle_sync1;
+    end
     
     always @(posedge clk_pixel) begin
         if (h_cnt == H_TOTAL - 1) begin
@@ -111,10 +140,8 @@ module top (
                 7: digit_rom = 35'b11111_00001_00010_00100_01000_10000_10000;
                 8: digit_rom = 35'b11111_10001_10001_11111_10001_10001_11111;
                 9: digit_rom = 35'b11111_10001_10001_11111_00001_00001_11111;
-                10: digit_rom = 35'b01110_10001_10000_01110_00001_10001_01110;
-                11: digit_rom = 35'b11110_10001_10001_11110_10000_10000_10000;
-                12: digit_rom = 35'b11110_10001_10001_10001_10001_10001_11110;
-                13: digit_rom = 35'b00000_00000_01110_00000_01110_00000_00000;
+                10: digit_rom = 35'b01110_10001_10001_11111_10001_10001_01110;
+                11: digit_rom = 35'b00000_00000_01110_00000_01110_00000_00000;
                 default: digit_rom = 35'b00000_00000_00000_00000_00000_00000_00000;
             endcase
         end
@@ -172,71 +199,42 @@ module top (
     wire right_numbers = num_R75 || num_R60 || num_R45 || num_R30 || num_R15 || num_R0;
     wire is_number = left_numbers || right_numbers || num_90;
     
-    reg [23:0] angle_timer = 0;
-    reg [7:0]  angle_deg = 0;
-    reg        angle_dir = 0;
+    localparam ANG_Y = 230;
+    localparam ANG_START_X = 370;
     
-    always @(posedge clk_pixel) begin
-        angle_timer <= angle_timer + 1;
-        if (angle_timer >= 500000) begin
-            angle_timer <= 0;
-            if (!angle_dir) begin
-                if (angle_deg >= 180) begin
-                    angle_dir <= 1;
-                end else begin
-                    angle_deg <= angle_deg + 1;
-                end
-            end else begin
-                if (angle_deg <= 0) begin
-                    angle_dir <= 0;
-                end else begin
-                    angle_deg <= angle_deg - 1;
-                end
-            end
-        end
-    end
-
-    localparam SPD_Y = 230;
-    localparam SPD_START_X = 370;
-    
-    // Map needle angle to displayed speed (0-90-0)
     wire [7:0] display_speed;
     
     always @(*) begin
         if (angle_deg <= 90) begin
-            display_speed = angle_deg;           // 0 to 90
+            display_speed = angle_deg;
         end else begin
-            display_speed = 180 - angle_deg;     // 90 down to 0
+            display_speed = 180 - angle_deg;
         end
     end
     
-    wire [3:0] spd_hundreds = (display_speed >= 100) ? 1 : 0;
-    wire [3:0] spd_tens     = (display_speed % 100) / 10;
-    wire [3:0] spd_ones     = display_speed % 10;
+    wire [3:0] ang_hundreds = (display_speed >= 100) ? 1 : 0;
+    wire [3:0] ang_tens     = (display_speed % 100) / 10;
+    wire [3:0] ang_ones     = display_speed % 10;
     
-    // Draw "SPD:" label
-    wire letter_S   = draw_digit(10, SPD_START_X,     SPD_Y, px, py);
-    wire letter_P   = draw_digit(11, SPD_START_X + 6, SPD_Y, px, py);
-    wire letter_D   = draw_digit(12, SPD_START_X + 12, SPD_Y, px, py);
-    wire letter_colon = draw_digit(13, SPD_START_X + 18, SPD_Y, px, py);
+    wire letter_theta = draw_digit(10, ANG_START_X,     ANG_Y, px, py);
+    wire letter_colon = draw_digit(11, ANG_START_X + 6, ANG_Y, px, py);
     
-    // Draw the speed number
-    reg spd_display;
+    reg ang_display;
     
     always @(*) begin
         if (display_speed >= 100) begin
-            spd_display = draw_digit(spd_hundreds, SPD_START_X + 30, SPD_Y, px, py) ||
-                          draw_digit(spd_tens, SPD_START_X + 36, SPD_Y, px, py) ||
-                          draw_digit(spd_ones, SPD_START_X + 42, SPD_Y, px, py);
+            ang_display = draw_digit(ang_hundreds, ANG_START_X + 14, ANG_Y, px, py) ||
+                          draw_digit(ang_tens, ANG_START_X + 20, ANG_Y, px, py) ||
+                          draw_digit(ang_ones, ANG_START_X + 26, ANG_Y, px, py);
         end else if (display_speed >= 10) begin
-            spd_display = draw_digit(spd_tens, SPD_START_X + 30, SPD_Y, px, py) ||
-                          draw_digit(spd_ones, SPD_START_X + 36, SPD_Y, px, py);
+            ang_display = draw_digit(ang_tens, ANG_START_X + 14, ANG_Y, px, py) ||
+                          draw_digit(ang_ones, ANG_START_X + 20, ANG_Y, px, py);
         end else begin
-            spd_display = draw_digit(spd_ones, SPD_START_X + 30, SPD_Y, px, py);
+            ang_display = draw_digit(ang_ones, ANG_START_X + 14, ANG_Y, px, py);
         end
     end
-    
-    wire is_speed_display = letter_S || letter_P || letter_D || letter_colon || spd_display;
+
+    wire is_speed_display = letter_theta || letter_colon || ang_display;
 
     reg signed [8:0] cos_norm;
     reg signed [8:0] sin_norm;

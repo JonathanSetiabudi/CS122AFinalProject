@@ -57,6 +57,8 @@ target_include_directories(CS122AFinalProjectPicoSide PRIVATE
 target_link_libraries(CS122AFinalProjectPicoSide 
         hardware_i2c
         hardware_spi
+        hardware_pwm
+        hardware_adc
         )
 
 pico_add_extra_outputs(CS122AFinalProjectPicoSide)

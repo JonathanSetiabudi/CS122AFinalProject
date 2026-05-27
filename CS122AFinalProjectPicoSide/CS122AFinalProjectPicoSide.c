@@ -23,9 +23,9 @@
 #define POT_PIN 26
 #define SERVO_PIN 15
 
-#define SPI_CS_FPGA 8   // GPIO 8 (Pin 11)
-#define SPI_CLK_PIN 6   // GPIO 6 (Pin 9)
-#define SPI_MOSI_PIN 7  // GPIO 7 (Pin 10)
+#define SPI_CS_FPGA 17   
+#define SPI_CLK_PIN 18  
+#define SPI_MOSI_PIN 19  
 #define SPI_PORT spi0
 
 #define alpha 0.98
@@ -131,41 +131,59 @@ int main()
     float gaind = 0.0;
     float u = 0.0;
     
-
     // ==========================================
     // 1. GYRO CALIBRATION ROUTINE
     // ==========================================
     printf("Calibrating Gyro... Do not move the cannon!\n");
     int32_t gyro_x_sum = 0;
     
-    // Take 500 readings while stationary to find the average hardware error
     for (int i = 0; i < 500; i++) {
         mpu6050_read_raw(acceleration, gyro, &temp);
-        gyro_x_sum += gyro[0]; // Tracking X-axis rotation
+        gyro_x_sum += gyro[0];
         sleep_ms(3);
     }
     
-    // Calculate the static offset
     float gyro_x_offset = (float)gyro_x_sum / 500.0;
     printf("Calibration complete. X-axis offset: %f\n", gyro_x_offset);
-    sleep_ms(1000); // Pause for a second so you can read the console
+    sleep_ms(1000);
+    
     // ==========================================
-
+    // TEST SERVO FIRST - Move to 0°, 90°, 180°
     // ==========================================
-    // PWM SETUP FOR SG90 SERVO
-    // ==========================================
+    printf("Testing servo...\n");
+    
+    // Setup PWM
     gpio_set_function(SERVO_PIN, GPIO_FUNC_PWM);
     uint slice_num = pwm_gpio_to_slice_num(SERVO_PIN);
-    
-    // Divide 125MHz system clock by 125 to get a 1MHz counter (1 tick = 1 microsecond)
-    pwm_set_clkdiv(slice_num, 125.0);
-    
-    // Set the period to 20,000 microseconds (20ms = 50Hz)
+    pwm_set_clkdiv(slice_num, 125.0f);
     pwm_set_wrap(slice_num, 20000);
-    
-    // Start the PWM generator
     pwm_set_enabled(slice_num, true);
+    
+    // Test servo positions
+    printf("Moving servo to 0°\n");
+    pwm_set_gpio_level(SERVO_PIN, 500);   // 0 degrees
+    sleep_ms(2000);
+    
+    printf("Moving servo to 90°\n");
+    pwm_set_gpio_level(SERVO_PIN, 1450);  // 90 degrees (approx)
+    sleep_ms(2000);
+    
+    printf("Moving servo to 180°\n");
+    pwm_set_gpio_level(SERVO_PIN, 2400);  // 180 degrees
+    sleep_ms(2000);
+    
     // ==========================================
+    // SPI SETUP FOR FPGA COMMUNICATION
+    // ==========================================
+    spi_init(SPI_PORT, 1000 * 1000);
+    spi_set_format(SPI_PORT, 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST);  // ADD THIS!
+    
+    gpio_set_function(SPI_CLK_PIN, GPIO_FUNC_SPI);
+    gpio_set_function(SPI_MOSI_PIN, GPIO_FUNC_SPI);
+    
+    gpio_init(SPI_CS_FPGA);
+    gpio_set_dir(SPI_CS_FPGA, GPIO_OUT);
+    gpio_put(SPI_CS_FPGA, 1);
     
     absolute_time_t next_loop_time = get_absolute_time();
 
@@ -173,273 +191,55 @@ int main()
         next_loop_time = delayed_by_ms(next_loop_time, 100);
         mpu6050_read_raw(acceleration, gyro, &temp);
 
-        // ==========================================
-        // 2. APPLY CALIBRATION AND FIX AXES
-        // ==========================================
-        
-        // Subtract the calibration offset BEFORE dividing by 131.0
         gyro_rate = (float)(gyro[0] - gyro_x_offset) / 131.0;
-        
-        // Use Y and Z accelerometers to track rotation around the X axis
         accel_pitch = atan2(acceleration[1], acceleration[2]) * (180.0 / M_PI);
         
-        // dt is 100ms or 0.1 seconds
         angle_curr = angle_filtered + (gyro_rate * 0.1);
         angle_filtered = alpha * angle_curr + (1.0 - alpha) * accel_pitch;
         
         printf("Current filtered angle = %f\n", angle_filtered);
-        angle_desired = 90.0 - map(adc_read(), 0, 4095, -90.0, 90.0);
-        printf("Desired angle = %f\n", angle_desired);
-        last_error = error;
+        
+        // Read potentiometer (0-4095) and map to desired angle (0-180)
+        uint16_t pot_value = adc_read();
+        angle_desired = map(pot_value, 0, 4095, 0, 180);
+        printf("Pot value: %d, Desired angle = %f\n", pot_value, angle_desired);
+        
+        // Constrain desired angle
+        if (angle_desired < 0) angle_desired = 0;
+        if (angle_desired > 180) angle_desired = 180;
+        
         error = angle_desired - angle_filtered;
         printf("Error = %f\n", error);
-        // Use the error to adjust the cannon's position
-        total_error += error;
-        u = gainp * error + gaini * total_error + gaind * (error - last_error)/0.1;
-        // 1. Calculate absolute target for the servo
+        
+        // Simple P-controller for servo
+        u = gainp * error;
+        
         float servo_target_angle = angle_desired + u;
-
-        // 2. Constrain the angle so we don't break the plastic servo gears
-        if (servo_target_angle < 0.0) servo_target_angle = 0.0;
-        if (servo_target_angle > 180.0) servo_target_angle = 180.0;
-
-        // 3. Map the angle (0-180) to the microsecond pulse width (500us to 2400us)
-        // We cast the float to a long because your custom map() function expects longs
-        //long pwm_level = map((long)servo_target_angle, 0, 180, 500, 2400);
-        // TEMP: Have the servo just go to the desired angle without correction for now
-        long pwm_level = map((long)angle_desired, 0, 180, 500, 2400);
-    
-        // 4. Command the hardware PWM
+        if (servo_target_angle < 0) servo_target_angle = 0;
+        if (servo_target_angle > 180) servo_target_angle = 180;
+        
+        // Map angle to PWM pulse width (500us = 0°, 2400us = 180°)
+        // Linear interpolation: pulse = 500 + (angle * (1900/180))
+        long pwm_level = 500 + (servo_target_angle * 1900 / 180);
+        
+        // Constrain PWM level
+        if (pwm_level < 500) pwm_level = 500;
+        if (pwm_level > 2400) pwm_level = 2400;
+        
+        printf("Servo target: %.1f°, PWM: %ld\n", servo_target_angle, pwm_level);
+        
+        // Command the servo
         pwm_set_gpio_level(SERVO_PIN, pwm_level);
-        // 5. Send SPI data to FPGA (for display on LCD)
-        uint8_t angle_desired_as_byte = (uint8_t)angle_desired; // Cast to uint8_t for SPI transmission
-        spi_write_blocking(SPI_PORT, (uint8_t*)&angle_desired_as_byte, 1); // Just sending the desired angle, in the future we will need to send the amount of correction (u)
+        
+        // Send SPI data to FPGA
+        uint8_t angle_to_send = (uint8_t)(angle_desired + 0.5);  // Round to nearest integer
+        gpio_put(SPI_CS_FPGA, 0);
+        sleep_us(10);
+        spi_write_blocking(SPI_PORT, &angle_to_send, 1);
+        sleep_us(10);
+        gpio_put(SPI_CS_FPGA, 1);
+        
+        printf("Sent angle: %d to FPGA\n\n", angle_to_send);
     }
 #endif
 }
-// #include <stdio.h>
-// #include <math.h>
-// #include <stdint.h>
-// #include <string.h>
-// #include "pico/stdlib.h"
-// #include "hardware/spi.h"
-// #include "hardware/gpio.h"
-
-// #define SPI_CS_FPGA 8   // GPIO 8 (Pin 11)
-// #define SPI_CLK_PIN 6   // GPIO 6 (Pin 9)
-// #define SPI_MOSI_PIN 7  // GPIO 7 (Pin 10)
-// #define SPI_PORT spi0
-
-// #define SCREEN_WIDTH  480
-// #define SCREEN_HEIGHT 272
-// #define TOTAL_PIXELS  (SCREEN_WIDTH * SCREEN_HEIGHT)  // 130,560 pixels
-
-// // RGB565 Colors
-// #define COLOR_BLACK  0x0000
-// #define COLOR_WHITE  0xFFFF
-// #define COLOR_RED    0xF800
-// #define COLOR_GREEN  0x07E0
-// #define COLOR_BLUE   0x001F
-// #define COLOR_YELLOW 0xFFE0
-
-// // Framebuffer (130,560 pixels × 2 bytes = 261,120 bytes)
-// static uint16_t framebuffer[TOTAL_PIXELS];
-
-// // Set a pixel in the framebuffer
-// void set_pixel(int x, int y, uint16_t color) {
-//     if (x >= 0 && x < SCREEN_WIDTH && y >= 0 && y < SCREEN_HEIGHT) {
-//         framebuffer[y * SCREEN_WIDTH + x] = color;
-//     }
-// }
-
-// // Fill entire framebuffer with a color
-// void fill_screen(uint16_t color) {
-//     for (int i = 0; i < TOTAL_PIXELS; i++) {
-//         framebuffer[i] = color;
-//     }
-// }
-
-// // Draw vertical line (full height)
-// void draw_vertical_line(int x_start, int width, uint16_t color) {
-//     for (int w = 0; w < width; w++) {
-//         for (int y = 0; y < SCREEN_HEIGHT; y++) {
-//             if (x_start + w < SCREEN_WIDTH) {
-//                 set_pixel(x_start + w, y, color);
-//             }
-//         }
-//     }
-// }
-
-// // Draw horizontal line (full width)
-// void draw_horizontal_line(int y_start, int height, uint16_t color) {
-//     for (int h = 0; h < height; h++) {
-//         for (int x = 0; x < SCREEN_WIDTH; x++) {
-//             if (y_start + h < SCREEN_HEIGHT) {
-//                 set_pixel(x, y_start + h, color);
-//             }
-//         }
-//     }
-// }
-
-// // Draw a circle (for compass gauge)
-// void draw_circle(int cx, int cy, int radius, uint16_t color) {
-//     for (int y = -radius; y <= radius; y++) {
-//         for (int x = -radius; x <= radius; x++) {
-//             if (x*x + y*y <= radius*radius) {
-//                 set_pixel(cx + x, cy + y, color);
-//             }
-//         }
-//     }
-// }
-
-// // Draw a line using Bresenham's algorithm
-// void draw_line(int x0, int y0, int x1, int y1, uint16_t color) {
-//     int dx = fabs(x1 - x0);
-//     int dy = -fabs(y1 - y0);
-//     int sx = (x0 < x1) ? 1 : -1;
-//     int sy = (y0 < y1) ? 1 : -1;
-//     int err = dx + dy;
-    
-//     while (1) {
-//         set_pixel(x0, y0, color);
-//         if (x0 == x1 && y0 == y1) break;
-//         int e2 = 2 * err;
-//         if (e2 >= dy) { err += dy; x0 += sx; }
-//         if (e2 <= dx) { err += dx; y0 += sy; }
-//     }
-// }
-
-// // Send framebuffer to FPGA over SPI
-// void spi_send_framebuffer(void) {
-//     gpio_put(SPI_CS_FPGA, 0);
-//     sleep_us(2);
-    
-//     // Send each pixel as 16-bit (MSB first)
-//     for (int i = 0; i < TOTAL_PIXELS; i++) {
-//         uint8_t bytes[2];
-//         bytes[0] = (framebuffer[i] >> 8) & 0xFF;
-//         bytes[1] = framebuffer[i] & 0xFF;
-//         spi_write_blocking(SPI_PORT, bytes, 2);
-//     }
-    
-//     sleep_us(2);
-//     gpio_put(SPI_CS_FPGA, 1);
-// }
-
-// // Setup SPI master
-// void setup_spi_master(void) {
-//     spi_init(SPI_PORT, 2500000);  // 2.5 MHz
-//     gpio_set_function(SPI_CLK_PIN, GPIO_FUNC_SPI);
-//     gpio_set_function(SPI_MOSI_PIN, GPIO_FUNC_SPI);
-//     spi_set_format(SPI_PORT, 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST);
-    
-//     gpio_init(SPI_CS_FPGA);
-//     gpio_set_dir(SPI_CS_FPGA, true);
-//     gpio_put(SPI_CS_FPGA, 1);
-// }
-
-// // Create vertical line test pattern
-// void create_vertical_line(void) {
-//     fill_screen(COLOR_BLACK);
-//     int center_x = SCREEN_WIDTH / 2;  // 240
-//     int line_width = 12;
-//     int x_start = center_x - (line_width / 2);  // 234
-//     draw_vertical_line(x_start, line_width, COLOR_WHITE);
-//     set_pixel(center_x, 10, COLOR_RED);  // Debug pixel
-// }
-
-// // Create horizontal line test pattern
-// void create_horizontal_line(void) {
-//     fill_screen(COLOR_BLACK);
-//     int center_y = SCREEN_HEIGHT / 2;  // 136
-//     int line_height = 12;
-//     int y_start = center_y - (line_height / 2);  // 130
-//     draw_horizontal_line(y_start, line_height, COLOR_WHITE);
-//     set_pixel(10, center_y, COLOR_RED);  // Debug pixel
-// }
-
-// // Create compass gauge for accelerometer
-// void create_compass_gauge(int angle_deg) {
-//     fill_screen(COLOR_BLACK);
-    
-//     int cx = SCREEN_WIDTH / 2;   // 240
-//     int cy = SCREEN_HEIGHT / 2;  // 136
-//     int radius = 100;
-    
-//     // Draw compass circle
-//     draw_circle(cx, cy, radius, COLOR_WHITE);
-    
-//     // Draw tick marks (every 30 degrees)
-//     for (int deg = -90; deg <= 90; deg += 30) {
-//         float rad = deg * 3.14159f / 180.0f;
-//         int x1 = cx + (int)((radius - 10) * sin(rad));
-//         int y1 = cy - (int)((radius - 10) * cos(rad));
-//         int x2 = cx + (int)(radius * sin(rad));
-//         int y2 = cy - (int)(radius * cos(rad));
-//         draw_line(x1, y1, x2, y2, COLOR_WHITE);
-//     }
-    
-//     // Draw needle at specified angle
-//     float rad = angle_deg * 3.14159f / 180.0f;
-//     int needle_x = cx + (int)((radius - 20) * sin(rad));
-//     int needle_y = cy - (int)((radius - 20) * cos(rad));
-//     draw_line(cx, cy, needle_x, needle_y, COLOR_RED);
-    
-//     // Draw center dot
-//     draw_circle(cx, cy, 5, COLOR_WHITE);
-// }
-
-// // Simulate accelerometer (replace with actual I2C reading)
-// int read_accelerometer_angle(void) {
-//     static int angle = 0;
-//     static int direction = 1;
-    
-//     angle += direction;
-//     if (angle >= 90 || angle <= -90) {
-//         direction = -direction;
-//     }
-//     return angle;
-// }
-
-// int main(void) {
-//     stdio_init_all();
-//     sleep_ms(1000);
-//     setup_spi_master();
-    
-//     printf("\n=== FPGA Framebuffer Test ===\n");
-//     printf("Screen: %d x %d = %d pixels\n", SCREEN_WIDTH, SCREEN_HEIGHT, TOTAL_PIXELS);
-//     printf("Framebuffer size: %d bytes\n", TOTAL_PIXELS * 2);
-    
-//     int mode = 0;  // 0=vertical, 1=horizontal, 2=gauge
-//     int angle = 0;
-    
-//     while (1) {
-//         switch (mode) {
-//             case 0:
-//                 printf("Vertical line test\n");
-//                 create_vertical_line();
-//                 spi_send_framebuffer();
-//                 sleep_ms(2000);
-//                 mode = 1;
-//                 break;
-                
-//             case 1:
-//                 printf("Horizontal line test\n");
-//                 create_horizontal_line();
-//                 spi_send_framebuffer();
-//                 sleep_ms(2000);
-//                 mode = 2;
-//                 break;
-                
-//             case 2:
-//                 // Read actual accelerometer here
-//                 angle = read_accelerometer_angle();
-//                 printf("Compass gauge: angle = %d°\n", angle);
-//                 create_compass_gauge(angle);
-//                 spi_send_framebuffer();
-//                 sleep_ms(100);
-//                 // Stay in gauge mode, just update angle
-//                 break;
-//         }
-//     }
-// }
