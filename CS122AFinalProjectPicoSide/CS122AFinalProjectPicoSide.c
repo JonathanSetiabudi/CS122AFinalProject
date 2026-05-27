@@ -6,6 +6,7 @@
 #include "pico/time.h"
 #include "hardware/i2c.h"
 #include "hardware/adc.h"
+#include "hardware/spi.h"
 #include "hardware/timer.h"
 #include "hardware/gpio.h"
 #include "hardware/pwm.h"
@@ -21,6 +22,11 @@
 #define I2C_SCL 9
 #define POT_PIN 26
 #define SERVO_PIN 15
+
+#define SPI_CS_FPGA 8   // GPIO 8 (Pin 11)
+#define SPI_CLK_PIN 6   // GPIO 6 (Pin 9)
+#define SPI_MOSI_PIN 7  // GPIO 7 (Pin 10)
+#define SPI_PORT spi0
 
 #define alpha 0.98
 
@@ -182,7 +188,7 @@ int main()
         angle_filtered = alpha * angle_curr + (1.0 - alpha) * accel_pitch;
         
         printf("Current filtered angle = %f\n", angle_filtered);
-        angle_desired = 90.0 -map(adc_read(), 0, 4095, -90.0, 90.0);
+        angle_desired = 90.0 - map(adc_read(), 0, 4095, -90.0, 90.0);
         printf("Desired angle = %f\n", angle_desired);
         last_error = error;
         error = angle_desired - angle_filtered;
@@ -199,12 +205,15 @@ int main()
 
         // 3. Map the angle (0-180) to the microsecond pulse width (500us to 2400us)
         // We cast the float to a long because your custom map() function expects longs
-        long pwm_level = map((long)servo_target_angle, 0, 180, 500, 2400);
-        
+        //long pwm_level = map((long)servo_target_angle, 0, 180, 500, 2400);
+        // TEMP: Have the servo just go to the desired angle without correction for now
+        long pwm_level = map((long)angle_desired, 0, 180, 500, 2400);
+    
         // 4. Command the hardware PWM
         pwm_set_gpio_level(SERVO_PIN, pwm_level);
-        
-        sleep_until(next_loop_time);
+        // 5. Send SPI data to FPGA (for display on LCD)
+        uint8_t angle_desired_as_byte = (uint8_t)angle_desired; // Cast to uint8_t for SPI transmission
+        spi_write_blocking(SPI_PORT, (uint8_t*)&angle_desired_as_byte, 1); // Just sending the desired angle, in the future we will need to send the amount of correction (u)
     }
 #endif
 }
