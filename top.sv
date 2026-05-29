@@ -49,29 +49,53 @@ module top (
     reg [7:0] angle_raw = 0;
     reg [7:0] shift_reg = 0;
     reg [2:0] bit_count = 0;
+    reg cs_prev = 1'b1;
     
-    always @(posedge sclk) begin
-        if (cs_n) begin
+    reg sclk_sync1 = 0;
+    reg sclk_sync2 = 0;
+    reg mosi_sync1 = 0;
+    reg mosi_sync2 = 0;
+    reg cs_sync1 = 0;
+    reg cs_sync2 = 0;
+    
+    always @(posedge clk_pixel) begin
+        sclk_sync1 <= sclk;
+        sclk_sync2 <= sclk_sync1;
+        mosi_sync1 <= mosi;
+        mosi_sync2 <= mosi_sync1;
+        cs_sync1 <= cs_n;
+        cs_sync2 <= cs_sync1;
+    end
+    
+    wire sclk_rising = (sclk_sync2 && !sclk_sync1);
+    wire cs_active = !cs_sync2;
+    
+    always @(posedge clk_pixel) begin
+        if (cs_prev && !cs_active) begin
             bit_count <= 0;
             shift_reg <= 0;
-        end else begin
-            shift_reg <= {shift_reg[6:0], mosi};
+        end
+        cs_prev <= cs_active;
+        
+        if (cs_active && sclk_rising) begin
+            shift_reg <= {shift_reg[6:0], mosi_sync2};
             bit_count <= bit_count + 1'b1;
             
             if (bit_count == 3'd7) begin
-                angle_raw <= {shift_reg[6:0], mosi};
+                angle_raw <= {shift_reg[6:0], mosi_sync2};
                 bit_count <= 0;
             end
         end
     end
     
     reg [7:0] angle_sync1 = 0;
-    reg [7:0] angle_deg = 0;
+    reg [7:0] angle_deg = 90;
     
     always @(posedge clk_pixel) begin
         angle_sync1 <= angle_raw;
         angle_deg <= angle_sync1;
     end
+    
     
     always @(posedge clk_pixel) begin
         if (h_cnt == H_TOTAL - 1) begin
@@ -202,15 +226,7 @@ module top (
     localparam ANG_Y = 230;
     localparam ANG_START_X = 370;
     
-    wire [7:0] display_speed;
-    
-    always @(*) begin
-        if (angle_deg <= 90) begin
-            display_speed = angle_deg;
-        end else begin
-            display_speed = 180 - angle_deg;
-        end
-    end
+    wire [7:0] display_speed = angle_deg;
     
     wire [3:0] ang_hundreds = (display_speed >= 100) ? 1 : 0;
     wire [3:0] ang_tens     = (display_speed % 100) / 10;

@@ -175,7 +175,8 @@ int main()
     // ==========================================
     // SPI SETUP FOR FPGA COMMUNICATION
     // ==========================================
-    spi_init(SPI_PORT, 1000 * 1000);
+    //1000->250
+    spi_init(SPI_PORT, 250 * 1000);
     spi_set_format(SPI_PORT, 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST);  // ADD THIS!
     
     gpio_set_function(SPI_CLK_PIN, GPIO_FUNC_SPI);
@@ -199,9 +200,9 @@ int main()
         
         printf("Current filtered angle = %f\n", angle_filtered);
         
-        // Read potentiometer (0-4095) and map to desired angle (0-180)
+        // Read potentiometer (800-3800) and map to desired angle (0-180)
         uint16_t pot_value = adc_read();
-        angle_desired = map(pot_value, 0, 4095, 0, 180);
+        angle_desired = map(pot_value, 800, 3800, 0, 180);
         printf("Pot value: %d, Desired angle = %f\n", pot_value, angle_desired);
         
         // Constrain desired angle
@@ -218,13 +219,12 @@ int main()
         if (servo_target_angle < 0) servo_target_angle = 0;
         if (servo_target_angle > 180) servo_target_angle = 180;
         
-        // Map angle to PWM pulse width (500us = 0°, 2400us = 180°)
-        // Linear interpolation: pulse = 500 + (angle * (1900/180))
-        long pwm_level = 500 + (servo_target_angle * 1900 / 180);
+
+        long pwm_level = map((long)servo_target_angle, 0, 180, 600, 3200);
         
         // Constrain PWM level
-        if (pwm_level < 500) pwm_level = 500;
-        if (pwm_level > 2400) pwm_level = 2400;
+        if (pwm_level < 600) pwm_level = 600;
+        if (pwm_level > 3200) pwm_level = 3200;
         
         printf("Servo target: %.1f°, PWM: %ld\n", servo_target_angle, pwm_level);
         
@@ -232,13 +232,16 @@ int main()
         pwm_set_gpio_level(SERVO_PIN, pwm_level);
         
         // Send SPI data to FPGA
-        uint8_t angle_to_send = (uint8_t)(angle_desired + 0.5);  // Round to nearest integer
+        uint8_t angle_to_send = (uint8_t)(servo_target_angle + 0.5);  // Round to nearest integer
+        // Fixed test value for debugging
+        // uint8_t angle_to_send = 120;  // Truncate to integer
         gpio_put(SPI_CS_FPGA, 0);
-        sleep_us(10);
+        sleep_us(50);
         spi_write_blocking(SPI_PORT, &angle_to_send, 1);
-        sleep_us(10);
+        sleep_us(50);
         gpio_put(SPI_CS_FPGA, 1);
-        
+        sleep_us(10);
+
         printf("Sent angle: %d to FPGA\n\n", angle_to_send);
     }
 #endif
