@@ -14,6 +14,8 @@ module top (
     output wire [4:0]  dbg
 );
 
+// Clock
+
     wire clk_pixel;
     wire locked;
     
@@ -25,6 +27,8 @@ module top (
     );
     
     assign lcd_clk = clk_pixel;
+
+// LCD Timing
 
     localparam H_ACTIVE = 480;
     localparam H_FP     = 8;
@@ -45,9 +49,23 @@ module top (
     assign lcd_hsync = ~((h_cnt >= H_ACTIVE + H_FP) && (h_cnt < H_ACTIVE + H_FP + H_SYNC));
     assign lcd_vsync = ~((v_cnt >= V_ACTIVE + V_FP) && (v_cnt < V_ACTIVE + V_FP + V_SYNC));
     assign lcd_de = active;
+    
+    always @(posedge clk_pixel) begin
+        if (h_cnt == H_TOTAL - 1) begin
+            h_cnt <= 0;
+            v_cnt <= (v_cnt == V_TOTAL - 1) ? 0 : v_cnt + 1;
+        end else begin
+            h_cnt <= h_cnt + 1;
+        end
+    end
+
+// SPI - 3bytes
 
     reg [7:0] angle_raw = 0;
+    reg [7:0] target_raw = 0;
+    reg [7:0] correction_raw = 0;
     reg [7:0] shift_reg = 0;
+    reg [3:0] byte_count = 0;
     reg [2:0] bit_count = 0;
     reg cs_prev = 1'b1;
     
@@ -73,6 +91,7 @@ module top (
     always @(posedge clk_pixel) begin
         if (cs_prev && !cs_active) begin
             bit_count <= 0;
+            byte_count <= 0;
             shift_reg <= 0;
         end
         cs_prev <= cs_active;
@@ -82,29 +101,39 @@ module top (
             bit_count <= bit_count + 1'b1;
             
             if (bit_count == 3'd7) begin
-                angle_raw <= {shift_reg[6:0], mosi_sync2};
+                case (byte_count)
+                    0: angle_raw <= {shift_reg[6:0], mosi_sync2};
+                    1: target_raw <= {shift_reg[6:0], mosi_sync2};
+                    2: correction_raw <= {shift_reg[6:0], mosi_sync2};
+                endcase
+                
+                byte_count <= byte_count + 1'b1;
                 bit_count <= 0;
+                
+                if (byte_count == 3) begin
+                    byte_count <= 0;
+                end
             end
         end
     end
     
     reg [7:0] angle_sync1 = 0;
     reg [7:0] angle_deg = 90;
+    reg [7:0] target_sync1 = 0;
+    reg [7:0] target_deg = 90;
+    reg [7:0] correction_sync1 = 0;
+    reg [7:0] correction_val = 0;
     
     always @(posedge clk_pixel) begin
         angle_sync1 <= angle_raw;
         angle_deg <= angle_sync1;
+        target_sync1 <= target_raw;
+        target_deg <= target_sync1;
+        correction_sync1 <= correction_raw;
+        correction_val <= correction_sync1;
     end
-    
-    
-    always @(posedge clk_pixel) begin
-        if (h_cnt == H_TOTAL - 1) begin
-            h_cnt <= 0;
-            v_cnt <= (v_cnt == V_TOTAL - 1) ? 0 : v_cnt + 1;
-        end else begin
-            h_cnt <= h_cnt + 1;
-        end
-    end
+
+// Pixel Coordinates
 
     wire [9:0] px = h_cnt;
     wire [8:0] py = v_cnt;
@@ -112,14 +141,16 @@ module top (
     localparam CX = 240;
     localparam CY = 210;
     localparam RADIUS = 160;
-    localparam NEEDLE_LEN = 145;
     localparam RADIUS_SQ = RADIUS * RADIUS;
+    localparam NEEDLE_LEN = 145;
+    localparam ARC_THICKNESS = 300;
     
     wire signed [10:0] dx = $signed({1'b0, px}) - CX;
     wire signed [9:0]  dy = $signed({1'b0, py}) - CY;
     wire [21:0] dist2 = dx*dx + dy*dy;
     
-    wire on_arc = (dist2 >= RADIUS_SQ - 300 && dist2 <= RADIUS_SQ + 300) && (dy <= 0);
+    wire on_arc = (dist2 >= RADIUS_SQ - ARC_THICKNESS && 
+                   dist2 <= RADIUS_SQ + ARC_THICKNESS) && (dy <= 0);
     wire on_baseline = (py >= CY - 1 && py <= CY + 1);
     
     function inside;
@@ -131,6 +162,8 @@ module top (
             inside = (xp >= x1 && xp <= x2 && yp >= y1 && yp <= y2);
         end
     endfunction
+
+// Tick Marks
 
     wire tick_0   = inside(76, 84, 207, 213, px, py);
     wire tick_15  = inside(81, 89, 166, 172, px, py);
@@ -149,11 +182,14 @@ module top (
     
     wire is_tick = tick_0 || tick_15 || tick_30 || tick_45 || tick_60 || tick_75 || tick_90 ||
                    tick_75r || tick_60r || tick_45r || tick_30r || tick_15r || tick_0r;
-    
+
+// Font
+
     function [34:0] digit_rom;
         input [3:0] d;
         begin
             case (d)
+                // Numbers
                 0: digit_rom = 35'b11111_10001_10001_10001_10001_10001_11111;
                 1: digit_rom = 35'b00100_01100_00100_00100_00100_00100_01110;
                 2: digit_rom = 35'b11111_00001_00001_11111_10000_10000_11111;
@@ -164,8 +200,18 @@ module top (
                 7: digit_rom = 35'b11111_00001_00010_00100_01000_10000_10000;
                 8: digit_rom = 35'b11111_10001_10001_11111_10001_10001_11111;
                 9: digit_rom = 35'b11111_10001_10001_11111_00001_00001_11111;
-                10: digit_rom = 35'b01110_10001_10001_11111_10001_10001_01110;
-                11: digit_rom = 35'b00000_00000_01110_00000_01110_00000_00000;
+                
+                // Letters and symbols
+                10: digit_rom = 35'b01110_10001_10001_11111_10001_10001_10001;  // A
+                11: digit_rom = 35'b00000_00000_01100_00000_01100_00000_00000;  // :
+                12: digit_rom = 35'b01110_10001_10000_10000_10000_10001_01110;  // C
+                13: digit_rom = 35'b11111_10000_10000_11110_10000_10000_10000;  // F
+                14: digit_rom = 35'b11001_11001_10101_10101_10101_10011_10011;  // N
+                15: digit_rom = 35'b10000_10000_10000_10000_10000_10000_11111;  // L
+                16: digit_rom = 35'b01110_10001_10000_01110_00001_10001_01110;  // S
+                17: digit_rom = 35'b11111_00100_00100_00100_00100_00100_11111;  // I
+                18: digit_rom = 35'b11111_00100_00100_00100_00100_00100_00000;  // T
+                
                 default: digit_rom = 35'b00000_00000_00000_00000_00000_00000_00000;
             endcase
         end
@@ -203,7 +249,9 @@ module top (
                                  draw_digit(ones, top_x + 5 + space, top_y, xp, yp);
         end
     endfunction
-    
+
+// Gauge
+
     wire num_L0   = draw_digit(0, 58, 218, px, py);
     wire num_L15  = draw_number_spaced(1, 5, 65, 164, 2, px, py);
     wire num_L30  = draw_number_spaced(3, 0, 83, 121, 2, px, py);
@@ -222,40 +270,117 @@ module top (
     wire left_numbers  = num_L0 || num_L15 || num_L30 || num_L45 || num_L60 || num_L75;
     wire right_numbers = num_R75 || num_R60 || num_R45 || num_R30 || num_R15 || num_R0;
     wire is_number = left_numbers || right_numbers || num_90;
+
+// Title
+
+    localparam TEXT_X = 5;
+    localparam TEXT_Y = 5;
     
-    localparam ANG_Y = 230;
-    localparam ANG_START_X = 370;
+    wire text_C   = draw_digit(12, TEXT_X + 0,  TEXT_Y, px, py);
+    wire text_S   = draw_digit(16, TEXT_X + 6,  TEXT_Y, px, py);
+    wire text_1   = draw_digit(1,  TEXT_X + 12, TEXT_Y, px, py);
+    wire text_2a  = draw_digit(2,  TEXT_X + 18, TEXT_Y, px, py);
+    wire text_2b  = draw_digit(2,  TEXT_X + 24, TEXT_Y, px, py);
+    wire text_F   = draw_digit(13, TEXT_X + 36, TEXT_Y, px, py);
+    wire text_I   = draw_digit(17, TEXT_X + 42, TEXT_Y, px, py);
+    wire text_N   = draw_digit(14, TEXT_X + 48, TEXT_Y, px, py);
+    wire text_A   = draw_digit(10, TEXT_X + 54, TEXT_Y, px, py);
+    wire text_L   = draw_digit(15, TEXT_X + 60, TEXT_Y, px, py);
     
-    wire [7:0] display_speed = angle_deg;
+    wire is_text = text_C || text_S || text_1 || text_2a || text_2b ||
+                   text_F || text_I || text_N || text_A || text_L;
+
+// Angles
+
+    localparam INFO_START_X = 310;
+    localparam INFO_BASE_Y = 200;
+    localparam INFO_LINE_SPACING = 12;
     
-    wire [3:0] ang_hundreds = (display_speed >= 100) ? 1 : 0;
-    wire [3:0] ang_tens     = (display_speed % 100) / 10;
-    wire [3:0] ang_ones     = display_speed % 10;
+    // Angle(A)
+    wire [7:0] display_angle = angle_deg;
+    wire [3:0] ang_hundreds = (display_angle >= 100) ? 1 : 0;
+    wire [3:0] ang_tens     = (display_angle % 100) / 10;
+    wire [3:0] ang_ones     = display_angle % 10;
     
-    wire letter_theta = draw_digit(10, ANG_START_X,     ANG_Y, px, py);
-    wire letter_colon = draw_digit(11, ANG_START_X + 6, ANG_Y, px, py);
+    wire letter_ang_A = draw_digit(10, INFO_START_X, INFO_BASE_Y, px, py);
+    wire letter_ang_colon = draw_digit(11, INFO_START_X + 6, INFO_BASE_Y, px, py);
     
     reg ang_display;
-    
     always @(*) begin
-        if (display_speed >= 100) begin
-            ang_display = draw_digit(ang_hundreds, ANG_START_X + 14, ANG_Y, px, py) ||
-                          draw_digit(ang_tens, ANG_START_X + 20, ANG_Y, px, py) ||
-                          draw_digit(ang_ones, ANG_START_X + 26, ANG_Y, px, py);
-        end else if (display_speed >= 10) begin
-            ang_display = draw_digit(ang_tens, ANG_START_X + 14, ANG_Y, px, py) ||
-                          draw_digit(ang_ones, ANG_START_X + 20, ANG_Y, px, py);
+        if (display_angle >= 100) begin
+            ang_display = draw_digit(ang_hundreds, INFO_START_X + 14, INFO_BASE_Y, px, py) ||
+                          draw_digit(ang_tens, INFO_START_X + 20, INFO_BASE_Y, px, py) ||
+                          draw_digit(ang_ones, INFO_START_X + 26, INFO_BASE_Y, px, py);
+        end else if (display_angle >= 10) begin
+            ang_display = draw_digit(ang_tens, INFO_START_X + 14, INFO_BASE_Y, px, py) ||
+                          draw_digit(ang_ones, INFO_START_X + 20, INFO_BASE_Y, px, py);
         end else begin
-            ang_display = draw_digit(ang_ones, ANG_START_X + 14, ANG_Y, px, py);
+            ang_display = draw_digit(ang_ones, INFO_START_X + 14, INFO_BASE_Y, px, py);
+        end
+    end
+    
+    // Target(T)
+    wire [7:0] display_target = target_deg;
+    wire [3:0] targ_hundreds = (display_target >= 100) ? 1 : 0;
+    wire [3:0] targ_tens     = (display_target % 100) / 10;
+    wire [3:0] targ_ones     = display_target % 10;
+    
+    wire letter_targ_T = draw_digit(18, INFO_START_X, INFO_BASE_Y + INFO_LINE_SPACING, px, py);
+    wire letter_targ_colon = draw_digit(11, INFO_START_X + 6, INFO_BASE_Y + INFO_LINE_SPACING, px, py);
+    
+    reg targ_display;
+    always @(*) begin
+        if (display_target >= 100) begin
+            targ_display = draw_digit(targ_hundreds, INFO_START_X + 14, INFO_BASE_Y + INFO_LINE_SPACING, px, py) ||
+                          draw_digit(targ_tens, INFO_START_X + 20, INFO_BASE_Y + INFO_LINE_SPACING, px, py) ||
+                          draw_digit(targ_ones, INFO_START_X + 26, INFO_BASE_Y + INFO_LINE_SPACING, px, py);
+        end else if (display_target >= 10) begin
+            targ_display = draw_digit(targ_tens, INFO_START_X + 14, INFO_BASE_Y + INFO_LINE_SPACING, px, py) ||
+                          draw_digit(targ_ones, INFO_START_X + 20, INFO_BASE_Y + INFO_LINE_SPACING, px, py);
+        end else begin
+            targ_display = draw_digit(targ_ones, INFO_START_X + 14, INFO_BASE_Y + INFO_LINE_SPACING, px, py);
+        end
+    end
+    
+    // Correction(C)
+    wire [7:0] calc_correction = (angle_deg > target_deg) ? (angle_deg - target_deg) : (target_deg - angle_deg);
+    wire [7:0] display_correction = calc_correction;
+    wire [3:0] corr_hundreds = (display_correction >= 100) ? 1 : 0;
+    wire [3:0] corr_tens     = (display_correction % 100) / 10;
+    wire [3:0] corr_ones     = display_correction % 10;
+    
+    wire letter_corr_C = draw_digit(12, INFO_START_X, INFO_BASE_Y + (INFO_LINE_SPACING * 2), px, py);
+    wire letter_corr_colon = draw_digit(11, INFO_START_X + 6, INFO_BASE_Y + (INFO_LINE_SPACING * 2), px, py);
+    
+    reg corr_display;
+    always @(*) begin
+        if (display_correction >= 100) begin
+            corr_display = draw_digit(corr_hundreds, INFO_START_X + 14, INFO_BASE_Y + (INFO_LINE_SPACING * 2), px, py) ||
+                          draw_digit(corr_tens, INFO_START_X + 20, INFO_BASE_Y + (INFO_LINE_SPACING * 2), px, py) ||
+                          draw_digit(corr_ones, INFO_START_X + 26, INFO_BASE_Y + (INFO_LINE_SPACING * 2), px, py);
+        end else if (display_correction >= 10) begin
+            corr_display = draw_digit(corr_tens, INFO_START_X + 14, INFO_BASE_Y + (INFO_LINE_SPACING * 2), px, py) ||
+                          draw_digit(corr_ones, INFO_START_X + 20, INFO_BASE_Y + (INFO_LINE_SPACING * 2), px, py);
+        end else begin
+            corr_display = draw_digit(corr_ones, INFO_START_X + 14, INFO_BASE_Y + (INFO_LINE_SPACING * 2), px, py);
         end
     end
 
-    wire is_speed_display = letter_theta || letter_colon || ang_display;
+    wire is_info_display = letter_ang_A || letter_ang_colon || ang_display ||
+                          letter_targ_T || letter_targ_colon || targ_display ||
+                          letter_corr_C || letter_corr_colon || corr_display;
 
+// Needle Rendering
     reg signed [8:0] cos_norm;
     reg signed [8:0] sin_norm;
     
-    // AI generated these numbers
+    wire signed [11:0] needle_x;
+    wire signed [10:0] needle_y;
+    
+    assign needle_x = CX + ((cos_norm * NEEDLE_LEN) >>> 7);
+    assign needle_y = CY - ((sin_norm * NEEDLE_LEN) >>> 7);
+    
+    // AI generated
     always @(*) begin
         case (angle_deg)
             0:   begin cos_norm = -128; sin_norm =   0; end
@@ -442,12 +567,10 @@ module top (
             default: begin cos_norm = 0; sin_norm = 0; end
         endcase
     end
-    
-    wire signed [11:0] needle_x;
-    wire signed [10:0] needle_y;
-    
-    assign needle_x = CX + ((cos_norm * NEEDLE_LEN) >>> 7);
-    assign needle_y = CY - ((sin_norm * NEEDLE_LEN) >>> 7);
+
+// Needle Drawing
+
+    localparam NEEDLE_THRESHOLD = 180;
     
     wire on_needle;
     
@@ -467,15 +590,15 @@ module top (
     
     wire on_segment = (dot >= 0) && (dot <= line_len_sq);
     
-    localparam THRESHOLD = 180;
-    
-    assign on_needle = in_bbox && on_segment && (abs_cross < THRESHOLD);
+    assign on_needle = in_bbox && on_segment && (abs_cross < NEEDLE_THRESHOLD);
 
-    wire white_pixel = on_arc || on_baseline || is_tick || is_number || on_needle || is_speed_display;
+// Output
+
+    wire gauge_white = on_arc || on_baseline || is_tick || is_number || is_info_display || is_text;
     
-    assign lcd_r = active ? (white_pixel ? 5'b11111 : 5'b00000) : 5'b00000;
-    assign lcd_g = active ? (white_pixel ? 6'b111111 : 6'b000000) : 6'b000000;
-    assign lcd_b = active ? (white_pixel ? 5'b11111 : 5'b00000) : 5'b00000;
+    assign lcd_r = active ? (on_needle ? 5'b11111 : (gauge_white ? 5'b11111 : 5'b00000)) : 5'b00000;
+    assign lcd_g = active ? (on_needle ? 6'b000000 : (gauge_white ? 6'b111111 : 6'b000000)) : 6'b000000;
+    assign lcd_b = active ? (on_needle ? 5'b00000 : (gauge_white ? 5'b11111 : 5'b00000)) : 5'b00000;
     
     assign dbg = {2'b00, lcd_hsync, lcd_vsync, lcd_de};
 
