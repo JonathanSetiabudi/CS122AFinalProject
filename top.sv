@@ -290,13 +290,13 @@ module top (
     wire is_text = text_C || text_S || text_1 || text_2a || text_2b ||
                    text_F || text_I || text_N || text_A || text_L;
 
-// Angles
+// Angles - Shifted down so Angle starts at old Correction position
 
     localparam INFO_START_X = 310;
-    localparam INFO_BASE_Y = 200;
+    localparam INFO_BASE_Y = 224;  // Changed from 200 to 224 (was correction position)
     localparam INFO_LINE_SPACING = 12;
     
-    // Angle(A)
+    // Angle(A) - Now at top position (where correction used to be)
     wire [7:0] display_angle = angle_deg;
     wire [3:0] ang_hundreds = (display_angle >= 100) ? 1 : 0;
     wire [3:0] ang_tens     = (display_angle % 100) / 10;
@@ -319,7 +319,7 @@ module top (
         end
     end
     
-    // Target(T)
+    // Target(T) - Middle position
     wire [7:0] display_target = target_deg;
     wire [3:0] targ_hundreds = (display_target >= 100) ? 1 : 0;
     wire [3:0] targ_tens     = (display_target % 100) / 10;
@@ -342,7 +342,7 @@ module top (
         end
     end
     
-    // Correction(C)
+    // Correction(C) - Bottom position (shifted down one more level)
     wire [7:0] calc_correction = (angle_deg > target_deg) ? (angle_deg - target_deg) : (target_deg - angle_deg);
     wire [7:0] display_correction = calc_correction;
     wire [3:0] corr_hundreds = (display_correction >= 100) ? 1 : 0;
